@@ -13,11 +13,14 @@ import { Badge } from '@/components/ui/badge';
 import { LoginArea } from '@/components/auth/LoginArea';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
-import { Network, Users, Link as LinkIcon, Star, Sparkles, Globe } from 'lucide-react';
+import { Network, Users, Link as LinkIcon, Star, Sparkles, Globe, Search, X } from 'lucide-react';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useAuthor } from '@/hooks/useAuthor';
 import { genUserName } from '@/lib/genUserName';
 import { UserNodeDialog } from '@/components/UserNodeDialog';
+import { useUserSearch } from '@/hooks/useUserSearch';
+import { nip19 } from 'nostr-tools';
+import { useToast } from '@/hooks/useToast';
 import type { NostrMetadata } from '@nostrify/nostrify';
 
 interface ExtendedNodeObject extends NodeObject {
@@ -142,6 +145,105 @@ export function SocialGraphVisualizer() {
   // Get selected node data for dialog
   const selectedNodeData = graphData?.nodes.find(n => n.id === selectedNodeForDialog);
 
+  // Search state
+  const [mapSearchQuery, setMapSearchQuery] = useState('');
+  const [highlightedNodes, setHighlightedNodes] = useState<Set<string>>(new Set());
+  const [globalSearchInput, setGlobalSearchInput] = useState('');
+  const [isSearching, setIsSearching] = useState(false);
+  const { searchUser } = useUserSearch();
+  const { toast } = useToast();
+
+  // Search within current map
+  const handleMapSearch = useCallback(() => {
+    if (!graphData || !mapSearchQuery.trim()) {
+      setHighlightedNodes(new Set());
+      return;
+    }
+
+    const query = mapSearchQuery.trim().toLowerCase();
+    const matches = new Set<string>();
+
+    // Search through nodes
+    graphData.nodes.forEach(node => {
+      // Check if pubkey matches
+      if (node.id.toLowerCase().includes(query)) {
+        matches.add(node.id);
+        return;
+      }
+
+      // Check if it's an npub
+      try {
+        if (query.startsWith('npub1')) {
+          const decoded = nip19.decode(query);
+          if (decoded.type === 'npub' && decoded.data === node.id) {
+            matches.add(node.id);
+          }
+        }
+      } catch {
+        // Not a valid npub
+      }
+    });
+
+    if (matches.size === 0) {
+      toast({
+        title: 'User not found',
+        description: 'No users matching your search were found in the current graph.',
+        variant: 'destructive',
+      });
+    } else {
+      toast({
+        title: `Found ${matches.size} user${matches.size === 1 ? '' : 's'}`,
+        description: 'Matching nodes are highlighted in yellow.',
+      });
+    }
+
+    setHighlightedNodes(matches);
+  }, [graphData, mapSearchQuery, toast]);
+
+  // Clear map search
+  const clearMapSearch = useCallback(() => {
+    setMapSearchQuery('');
+    setHighlightedNodes(new Set());
+  }, []);
+
+  // Global user search - find and view any user's network
+  const handleGlobalSearch = useCallback(async () => {
+    if (!globalSearchInput.trim()) return;
+
+    setIsSearching(true);
+    try {
+      const result = await searchUser(globalSearchInput);
+
+      if (result.found && result.pubkey) {
+        toast({
+          title: 'User found!',
+          description: result.username
+            ? `Loading network for ${result.username}...`
+            : 'Loading user network...',
+        });
+
+        // View their network
+        setPerspectivePubkey(result.pubkey);
+        setViewMode('personal');
+        setGlobalSearchInput('');
+      } else {
+        toast({
+          title: 'User not found',
+          description: 'Could not find a user matching your search. Try using an npub or exact pubkey.',
+          variant: 'destructive',
+        });
+      }
+    } catch {
+      toast({
+        title: 'Search error',
+        description: 'An error occurred while searching. Please try again.',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsSearching(false);
+    }
+  }, [globalSearchInput, searchUser, toast]);
+
   // Get cluster color
   const getClusterColor = (cluster?: number): string => {
     if (cluster === undefined) return '#94a3b8';
@@ -158,7 +260,9 @@ export function SocialGraphVisualizer() {
       let color = getClusterColor(extNode.cluster);
 
       // Override color for special states
-      if (extNode.id === user?.pubkey) {
+      if (highlightedNodes.has(extNode.id)) {
+        color = '#eab308'; // yellow for search results
+      } else if (extNode.id === user?.pubkey) {
         color = '#ffffff'; // white for current user
       } else if (extNode.id === hoveredNode) {
         color = '#fbbf24'; // bright amber for hovered
@@ -214,7 +318,7 @@ export function SocialGraphVisualizer() {
         ctx.stroke();
       }
     },
-    [user?.pubkey, hoveredNode, highlightHubs]
+    [user?.pubkey, hoveredNode, highlightHubs, highlightedNodes]
   );
 
   // Draw links with different styles for bidirectional
@@ -245,13 +349,18 @@ export function SocialGraphVisualizer() {
   }, []);
 
   // Node label function for hover tooltip
+  // Note: This is called by the library for each node, we check if it matches the hovered one
   const getNodeLabel = useCallback((node: NodeObject) => {
     const extNode = node as ExtendedNodeObject;
-    if (!hoveredNode || extNode.id !== hoveredNode) return '';
+    if (typeof extNode.id !== 'string') return '';
 
+    // Check if this is the hovered node
+    if (extNode.id !== hoveredNode) return '';
+
+    // Show metadata if available, otherwise generated username
     const username = hoveredMetadata?.display_name ??
                     hoveredMetadata?.name ??
-                    genUserName(hoveredNode);
+                    genUserName(extNode.id);
 
     return username;
   }, [hoveredNode, hoveredMetadata]);
@@ -386,6 +495,63 @@ export function SocialGraphVisualizer() {
             </div>
           )}
 
+          {/* Search in Current Map */}
+          <div className="space-y-2">
+            <Label htmlFor="map-search">Search in Current Graph</Label>
+            <div className="flex gap-2">
+              <div className="relative flex-1">
+                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                <Input
+                  id="map-search"
+                  placeholder="Search by pubkey or npub..."
+                  value={mapSearchQuery}
+                  onChange={(e) => setMapSearchQuery(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleMapSearch()}
+                  className="pl-10 pr-10"
+                />
+                {mapSearchQuery && (
+                  <button
+                    onClick={clearMapSearch}
+                    className="absolute right-3 top-1/2 transform -translate-y-1/2"
+                  >
+                    <X className="w-4 h-4 text-muted-foreground hover:text-foreground" />
+                  </button>
+                )}
+              </div>
+              <Button onClick={handleMapSearch} size="sm">
+                Find
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Search for users in the current graph by pubkey or npub. Matches will be highlighted in yellow.
+            </p>
+          </div>
+
+          {/* Global User Search */}
+          <div className="space-y-2">
+            <Label htmlFor="global-search">View Any User's Network</Label>
+            <div className="flex gap-2">
+              <div className="relative flex-1">
+                <Network className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                <Input
+                  id="global-search"
+                  placeholder="Enter npub or pubkey..."
+                  value={globalSearchInput}
+                  onChange={(e) => setGlobalSearchInput(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleGlobalSearch()}
+                  className="pl-10"
+                  disabled={isSearching}
+                />
+              </div>
+              <Button onClick={handleGlobalSearch} size="sm" disabled={isSearching}>
+                {isSearching ? 'Searching...' : 'View'}
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Search for any user by npub or pubkey to explore their network.
+            </p>
+          </div>
+
           {/* Network Depth */}
           <div className="space-y-2">
             <div className="flex items-center justify-between">
@@ -457,6 +623,10 @@ export function SocialGraphVisualizer() {
               <div className="flex items-center gap-2">
                 <div className="w-4 h-4 rounded-full bg-white border-2 border-blue-500"></div>
                 <span className="text-xs text-muted-foreground">You</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="w-4 h-4 rounded-full bg-yellow-500"></div>
+                <span className="text-xs text-muted-foreground">Search result</span>
               </div>
               <div className="flex items-center gap-2">
                 <div className="w-4 h-4 rounded-full bg-amber-500"></div>
