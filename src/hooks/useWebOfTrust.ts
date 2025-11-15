@@ -9,6 +9,7 @@ export interface GraphNode {
   outDegree: number; // number of outgoing connections (following)
   isHub: boolean; // true if this is a major hub (high degree)
   cluster?: number; // cluster/community identifier
+  degreesFromRoot?: number; // degrees of separation from the starting user
 }
 
 export interface GraphLink {
@@ -34,6 +35,7 @@ interface WebOfTrustOptions {
   depth?: number; // How many levels deep to traverse (1 = direct follows, 2 = follows of follows, etc.)
   limit?: number; // Max events to fetch per query
   relayUrls?: string[]; // Custom relay URLs to query
+  referenceUser?: string; // User to calculate degrees of separation from (for distance metrics)
 }
 
 /**
@@ -42,10 +44,10 @@ interface WebOfTrustOptions {
  */
 export function useWebOfTrust(options: WebOfTrustOptions = {}) {
   const { nostr } = useNostr();
-  const { startPubkey, depth = 2, limit = 100, relayUrls } = options;
+  const { startPubkey, depth = 2, limit = 100, relayUrls, referenceUser } = options;
 
   return useQuery({
-    queryKey: ['web-of-trust', startPubkey, depth, limit, relayUrls],
+    queryKey: ['web-of-trust', startPubkey, depth, limit, relayUrls, referenceUser],
     queryFn: async (c) => {
       const signal = AbortSignal.any([c.signal, AbortSignal.timeout(15000)]);
 
@@ -210,6 +212,11 @@ export function useWebOfTrust(options: WebOfTrustOptions = {}) {
       // This is a simplified community detection (not full Louvain/Leiden)
       assignClusters(nodes, links);
 
+      // Calculate degrees of separation from reference user (if provided)
+      if (referenceUser) {
+        calculateDegreesOfSeparation(nodes, links, referenceUser);
+      }
+
       // Calculate statistics
       const stats = {
         totalNodes: nodes.length,
@@ -282,5 +289,49 @@ function assignClusters(nodes: GraphNode[], links: GraphLink[]): void {
 
       clusterId++;
     }
+  });
+}
+
+/**
+ * Calculate degrees of separation (shortest path) from a reference user
+ * Uses BFS to find the shortest path from the reference user to all other nodes
+ */
+function calculateDegreesOfSeparation(
+  nodes: GraphNode[],
+  links: GraphLink[],
+  referenceUser: string
+): void {
+  // Build adjacency list (treat as undirected for distance calculation)
+  const adjacency = new Map<string, Set<string>>();
+  nodes.forEach(node => {
+    adjacency.set(node.id, new Set());
+  });
+
+  links.forEach(link => {
+    adjacency.get(link.source)?.add(link.target);
+    adjacency.get(link.target)?.add(link.source);
+  });
+
+  // BFS from reference user
+  const distances = new Map<string, number>();
+  const queue: Array<{ id: string; distance: number }> = [{ id: referenceUser, distance: 0 }];
+  distances.set(referenceUser, 0);
+
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    const neighbors = adjacency.get(current.id) || new Set();
+
+    neighbors.forEach(neighborId => {
+      if (!distances.has(neighborId)) {
+        const newDistance = current.distance + 1;
+        distances.set(neighborId, newDistance);
+        queue.push({ id: neighborId, distance: newDistance });
+      }
+    });
+  }
+
+  // Assign distances to nodes
+  nodes.forEach(node => {
+    node.degreesFromRoot = distances.get(node.id);
   });
 }

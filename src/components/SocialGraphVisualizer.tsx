@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import ForceGraph2D from 'react-force-graph-2d';
 import type { ForceGraphMethods, NodeObject, LinkObject } from 'react-force-graph-2d';
-import { nip19 } from 'nostr-tools';
 import { useWebOfTrust } from '@/hooks/useWebOfTrust';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { useLocalStorage } from '@/hooks/useLocalStorage';
@@ -14,8 +13,12 @@ import { Badge } from '@/components/ui/badge';
 import { LoginArea } from '@/components/auth/LoginArea';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
-import { ExternalLink, Network, Users, Link as LinkIcon, Star, Sparkles } from 'lucide-react';
+import { Network, Users, Link as LinkIcon, Star, Sparkles, Globe } from 'lucide-react';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { useAuthor } from '@/hooks/useAuthor';
+import { genUserName } from '@/lib/genUserName';
+import { UserNodeDialog } from '@/components/UserNodeDialog';
+import type { NostrMetadata } from '@nostrify/nostrify';
 
 interface ExtendedNodeObject extends NodeObject {
   id: string;
@@ -23,6 +26,7 @@ interface ExtendedNodeObject extends NodeObject {
   outDegree: number;
   isHub: boolean;
   cluster?: number;
+  degreesFromRoot?: number;
 }
 
 interface ExtendedLinkObject extends LinkObject {
@@ -65,9 +69,12 @@ export function SocialGraphVisualizer() {
   const { user } = useCurrentUser();
   const [depth, setDepth] = useState(2);
   const [hoveredNode, setHoveredNode] = useState<string | null>(null);
+  const [selectedNodeForDialog, setSelectedNodeForDialog] = useState<string | null>(null);
   const [showLinkParticles, setShowLinkParticles] = useState(true);
   const [highlightHubs, setHighlightHubs] = useState(true);
   const [nostrClient, setNostrClient] = useState<'primal' | 'njump' | 'snort'>('primal');
+  const [viewMode, setViewMode] = useState<'personal' | 'global'>('personal');
+  const [perspectivePubkey, setPerspectivePubkey] = useState<string | undefined>(undefined);
   const graphRef = useRef<ForceGraphMethods>();
 
   // Relay management
@@ -77,12 +84,16 @@ export function SocialGraphVisualizer() {
     DEFAULT_RELAYS
   );
 
+  // Determine which pubkey to use for the graph
+  const graphStartPubkey = viewMode === 'global' ? undefined : (perspectivePubkey || user?.pubkey);
+
   // Fetch web of trust data
   const { data: graphData, isLoading, error } = useWebOfTrust({
-    startPubkey: user?.pubkey,
+    startPubkey: graphStartPubkey,
     depth,
     limit: 150,
     relayUrls: selectedRelays,
+    referenceUser: user?.pubkey, // Always calculate distance from logged-in user
   });
 
   // Get container dimensions
@@ -104,28 +115,18 @@ export function SocialGraphVisualizer() {
     return () => window.removeEventListener('resize', updateDimensions);
   }, []);
 
-  // Handle node clicks - open in external Nostr client
+  // Handle node clicks - open dialog
   const handleNodeClick = useCallback((node: NodeObject) => {
     const extNode = node as ExtendedNodeObject;
     if (!extNode.id || typeof extNode.id !== 'string') return;
+    setSelectedNodeForDialog(extNode.id);
+  }, []);
 
-    const npub = nip19.npubEncode(extNode.id);
-
-    let url = '';
-    switch (nostrClient) {
-      case 'primal':
-        url = `https://primal.net/p/${npub}`;
-        break;
-      case 'njump':
-        url = `https://njump.me/${npub}`;
-        break;
-      case 'snort':
-        url = `https://snort.social/p/${npub}`;
-        break;
-    }
-
-    window.open(url, '_blank', 'noopener,noreferrer');
-  }, [nostrClient]);
+  // Handle viewing from a user's perspective
+  const handleViewFromPerspective = useCallback((pubkey: string) => {
+    setPerspectivePubkey(pubkey);
+    setViewMode('personal');
+  }, []);
 
   // Handle node hover
   const handleNodeHover = useCallback((node: NodeObject | null) => {
@@ -133,6 +134,13 @@ export function SocialGraphVisualizer() {
     const nodeId = extNode?.id;
     setHoveredNode(nodeId && typeof nodeId === 'string' ? nodeId : null);
   }, []);
+
+  // Get hovered node metadata for tooltip
+  const hoveredAuthor = useAuthor(hoveredNode || '');
+  const hoveredMetadata: NostrMetadata | undefined = hoveredAuthor.data?.metadata;
+
+  // Get selected node data for dialog
+  const selectedNodeData = graphData?.nodes.find(n => n.id === selectedNodeForDialog);
 
   // Get cluster color
   const getClusterColor = (cluster?: number): string => {
@@ -236,6 +244,18 @@ export function SocialGraphVisualizer() {
     ctx.stroke();
   }, []);
 
+  // Node label function for hover tooltip
+  const getNodeLabel = useCallback((node: NodeObject) => {
+    const extNode = node as ExtendedNodeObject;
+    if (!hoveredNode || extNode.id !== hoveredNode) return '';
+
+    const username = hoveredMetadata?.display_name ??
+                    hoveredMetadata?.name ??
+                    genUserName(hoveredNode);
+
+    return username;
+  }, [hoveredNode, hoveredMetadata]);
+
   // Handle relay toggle
   const toggleRelay = (relay: string) => {
     setSelectedRelays(prev =>
@@ -336,6 +356,36 @@ export function SocialGraphVisualizer() {
           <CardTitle className="text-lg">Controls</CardTitle>
         </CardHeader>
         <CardContent className="space-y-6">
+          {/* View Mode Toggle (only when logged in) */}
+          {user && (
+            <div className="space-y-2">
+              <Label>View Mode</Label>
+              <div className="flex gap-2">
+                <Button
+                  variant={viewMode === 'personal' ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => {
+                    setViewMode('personal');
+                    setPerspectivePubkey(undefined);
+                  }}
+                  className="flex-1"
+                >
+                  <Users className="w-4 h-4 mr-2" />
+                  {perspectivePubkey ? 'Viewing User Network' : 'My Network'}
+                </Button>
+                <Button
+                  variant={viewMode === 'global' ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => setViewMode('global')}
+                  className="flex-1"
+                >
+                  <Globe className="w-4 h-4 mr-2" />
+                  Global
+                </Button>
+              </div>
+            </div>
+          )}
+
           {/* Network Depth */}
           <div className="space-y-2">
             <div className="flex items-center justify-between">
@@ -344,12 +394,13 @@ export function SocialGraphVisualizer() {
                 {depth === 1 && 'Direct follows only'}
                 {depth === 2 && 'Follows + their follows'}
                 {depth === 3 && 'Three degrees of separation'}
+                {depth === 4 && 'Four degrees of separation'}
               </span>
             </div>
             <Slider
               id="depth-slider"
               min={1}
-              max={3}
+              max={4}
               step={1}
               value={[depth]}
               onValueChange={([value]) => setDepth(value)}
@@ -514,6 +565,7 @@ export function SocialGraphVisualizer() {
                 height={dimensions.height}
                 nodeRelSize={6}
                 nodeCanvasObject={drawNode}
+                nodeLabel={getNodeLabel}
                 linkCanvasObject={drawLink}
                 onNodeClick={handleNodeClick}
                 onNodeHover={handleNodeHover}
@@ -538,14 +590,24 @@ export function SocialGraphVisualizer() {
             {graphData && !isLoading && (
               <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 pointer-events-none">
                 <Badge variant="secondary" className="flex items-center gap-1">
-                  <ExternalLink className="w-3 h-3" />
-                  Click any user to view their profile on {nostrClient}
+                  <Network className="w-3 h-3" />
+                  Click any user to view details and explore their network
                 </Badge>
               </div>
             )}
           </div>
         </CardContent>
       </Card>
+
+      {/* User Node Dialog */}
+      <UserNodeDialog
+        pubkey={selectedNodeForDialog}
+        onClose={() => setSelectedNodeForDialog(null)}
+        onViewFromPerspective={handleViewFromPerspective}
+        nostrClient={nostrClient}
+        inDegree={selectedNodeData?.inDegree || 0}
+        degreesFromRoot={selectedNodeData?.degreesFromRoot}
+      />
     </div>
   );
 }
