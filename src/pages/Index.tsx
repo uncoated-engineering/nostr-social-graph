@@ -1,23 +1,32 @@
 import { useSeoMeta } from '@unhead/react';
-
-// FIXME: Update this page (the content is just a fallback if you fail to update the page)
+import { SocialGraphVisualizer } from '@/components/SocialGraphVisualizer';
 
 const Index = () => {
   useSeoMeta({
-    title: 'Welcome to Your Blank App',
-    description: 'A modern Nostr client application built with React, TailwindCSS, and Nostrify.',
+    title: 'Nostr Social Graph Visualizer',
+    description: 'Explore the decentralized web of trust on the Nostr network. Visualize social connections and discover how users are connected.',
   });
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-100 dark:bg-gray-900">
-      <div className="text-center">
-        <h1 className="text-4xl font-bold mb-4 text-gray-900 dark:text-gray-100">
-          Welcome to Your Blank App
-        </h1>
-        <p className="text-xl text-gray-600 dark:text-gray-400">
-          Start building your amazing project here!
-        </p>
+    <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950">
+      <div className="container mx-auto px-4 py-8 max-w-7xl">
+        <SocialGraphVisualizer />
       </div>
+
+      {/* Footer */}
+      <footer className="mt-16 pb-8 text-center">
+        <p className="text-sm text-muted-foreground">
+          Vibed with{' '}
+          <a
+            href="https://soapbox.pub/mkstack"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-primary hover:underline"
+          >
+            MKStack
+          </a>
+        </p>
+      </footer>
     </div>
   );
 };
